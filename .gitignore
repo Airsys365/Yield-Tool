@@ -1,0 +1,10 @@
+# Generated output files
+yield_report.xlsx
+costs_template.xlsx
+results_test*.xlsx
+test_*.xlsx
+*.csv
+
+# Python cache
+__pycache__/
+*.pyc
