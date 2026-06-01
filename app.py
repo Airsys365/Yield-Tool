@@ -214,7 +214,7 @@ class App(ctk.CTk):
         left = ctk.CTkFrame(self)
         left.grid(row=1, column=0, sticky="nsew", padx=(12, 4), pady=(0, 12))
         left.grid_columnconfigure(0, weight=1)
-        left.grid_rowconfigure(4, weight=1)  # preview expands
+        left.grid_rowconfigure(5, weight=1)  # preview expands
 
         # Files block
         ff = ctk.CTkFrame(left, fg_color="transparent")
@@ -226,19 +226,31 @@ class App(ctk.CTk):
 
         self._raw_var     = ctk.StringVar()
         self._results_var = ctk.StringVar(value=str(RESULTS_DEFAULT))
+        self._source_var  = ctk.StringVar()
 
         self._file_row(ff, "Raw data:", self._raw_var, self._pick_raw,
                        "DB export  (Costs + Detectors sheets)", row=1)
         self._file_row(ff, "Results:",  self._results_var, self._pick_results,
                        "results.xlsx", row=2)
+        self._file_row(ff, "DB source:", self._source_var, self._pick_source,
+                       "SharePoint/OneDrive source xlsx", row=3)
 
         # Buttons
+        self._import_btn = ctk.CTkButton(
+            left, text="Import last week → raw file",
+            command=self._run_import, height=30,
+            fg_color="transparent", border_width=1,
+            text_color=MUTED, border_color=BORDER,
+            hover_color=ACCENT_FAINT,
+        )
+        self._import_btn.grid(row=1, column=0, sticky="ew", padx=8, pady=(2, 2))
+
         ctk.CTkButton(
             left, text="Check files", command=self._run_analysis, height=32,
             fg_color="transparent", border_width=1,
             text_color=ACCENT, border_color=ACCENT,
             hover_color=ACCENT_FAINT,
-        ).grid(row=1, column=0, sticky="ew", padx=8, pady=(4, 4))
+        ).grid(row=2, column=0, sticky="ew", padx=8, pady=(4, 4))
 
         self._run_btn = ctk.CTkButton(
             left, text="Add new weeks to results.xlsx",
@@ -247,11 +259,11 @@ class App(ctk.CTk):
             fg_color=ACCENT, hover_color=ACCENT_HOVER,
             state="disabled",
         )
-        self._run_btn.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
+        self._run_btn.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 8))
 
         # Preview (expands)
         pf = ctk.CTkFrame(left, fg_color="transparent")
-        pf.grid(row=4, column=0, sticky="nsew", padx=8, pady=(0, 8))
+        pf.grid(row=5, column=0, sticky="nsew", padx=8, pady=(0, 8))
         pf.grid_columnconfigure(0, weight=1)
         pf.grid_rowconfigure(1, weight=1)
 
@@ -352,6 +364,14 @@ class App(ctk.CTk):
             self._results_var.set(p)
             self._clear_analysis()
 
+    def _pick_source(self):
+        p = filedialog.askopenfilename(
+            title="DB source file",
+            filetypes=[("Excel", "*.xlsx *.xls"), ("All files", "*.*")])
+        if p:
+            self._source_var.set(p)
+            self._save_current_paths()
+
     # ── Analysis ────────────────────────────────────────────────────────────────────
 
     def _run_analysis(self):
@@ -411,6 +431,44 @@ class App(ctk.CTk):
         self._run_btn.configure(state="normal" if btn_on else "disabled", text=btn_text)
         self._set_preview("\n".join(lines))
         self._save_current_paths()
+
+    def _run_import(self):
+        source_path = self._source_var.get().strip()
+        raw_path    = self._raw_var.get().strip()
+        if not source_path:
+            messagebox.showwarning("No source", "Select a DB source file first")
+            return
+        if not raw_path:
+            messagebox.showwarning("No raw file", "Select the raw data file to update")
+            return
+
+        self._import_btn.configure(state="disabled", text="Importing...")
+        self._log_clear()
+
+        def _work():
+            try:
+                self._log_add("Reading source file...", "info")
+                filtered, week = core.import_raw_from_source(source_path)
+                if filtered.empty:
+                    self.after(0, lambda: self._import_btn.configure(
+                        state="normal", text="Import last week → raw file"))
+                    self._log_add(f"No rows found for {week} in source file", "warn")
+                    return
+                self._log_add(f"Found {len(filtered)} rows for {week}", "info")
+                self._log_add(f"Writing to {Path(raw_path).name}...", "info")
+                excel_writer.update_raw_sheet(raw_path, filtered)
+                self._log_add(f"Import complete — {week}, {len(filtered)} rows", "ok")
+                self.after(0, lambda: self._import_btn.configure(
+                    state="normal", text="Import last week → raw file"))
+                self.after(0, self._clear_analysis)
+            except Exception as e:
+                tb = traceback.format_exc()
+                self._log_add(f"Import error: {e}", "err")
+                self._log_add(tb, "err")
+                self.after(0, lambda: self._import_btn.configure(
+                    state="normal", text="Import last week → raw file"))
+
+        threading.Thread(target=_work, daemon=True).start()
 
     def _clear_analysis(self, *_):
         self._analysis = None
@@ -511,10 +569,12 @@ class App(ctk.CTk):
     def _restore_paths(self):
         if "raw"     in self._cfg: self._raw_var.set(self._cfg["raw"])
         if "results" in self._cfg: self._results_var.set(self._cfg["results"])
+        if "source"  in self._cfg: self._source_var.set(self._cfg["source"])
 
     def _save_current_paths(self):
-        self._cfg.update({"raw": self._raw_var.get(),
-                          "results": self._results_var.get()})
+        self._cfg.update({"raw":     self._raw_var.get(),
+                          "results": self._results_var.get(),
+                          "source":  self._source_var.get()})
         _save_config(self._cfg)
 
 

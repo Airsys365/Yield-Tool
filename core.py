@@ -379,6 +379,19 @@ def load_detectors(path: str,
     return out
 
 
+def import_raw_from_source(source_path: str) -> tuple[pd.DataFrame, str]:
+    """Read source file and return rows for the previous ISO week."""
+    from datetime import date, timedelta
+    today = date.today()
+    prev  = today - timedelta(days=7)
+    yr, wk, _ = prev.isocalendar()
+    target = f"{yr}-W{wk:02d}"
+    df = load_raw(source_path)
+    df["_week"] = df["InsertDate"].dt.strftime("%G-W%V")
+    out = df[df["_week"] == target].drop(columns=["_week"]).reset_index(drop=True)
+    return out, target
+
+
 def apply_detectors(results: dict[str, pd.DataFrame],
                     rows: list[tuple[str, str, int]]) -> tuple[dict[str, pd.DataFrame], int]:
     prod = results.get("product")
