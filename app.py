@@ -213,6 +213,9 @@ class App(ctk.CTk):
         self._costs_var   = ctk.StringVar()
         self._results_var = ctk.StringVar(value=str(RESULTS_DEFAULT))
 
+        from datetime import date as _date
+        self._year_var = ctk.StringVar(value=str(_date.today().year))
+
         self._file_row(ff, "DB source:", self._source_var, self._pick_source,
                        "production export xlsx", row=1)
         self._file_row(ff, "Costs:",     self._costs_var,  self._pick_costs,
@@ -220,13 +223,21 @@ class App(ctk.CTk):
         self._file_row(ff, "Results:",   self._results_var, self._pick_results,
                        "results.xlsx", row=3)
 
-        # Check button
+        # Check button row: Year filter  +  Check files
+        chk_row = ctk.CTkFrame(left, fg_color="transparent")
+        chk_row.grid(row=1, column=0, sticky="ew", padx=8, pady=(4, 4))
+        chk_row.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(chk_row, text="Year:", text_color=MUTED).grid(
+            row=0, column=0, sticky="w", padx=(0, 4))
+        ctk.CTkEntry(chk_row, textvariable=self._year_var, width=56).grid(
+            row=0, column=1, sticky="w", padx=(0, 8))
         ctk.CTkButton(
-            left, text="Check files", command=self._run_analysis, height=32,
+            chk_row, text="Check files", command=self._run_analysis, height=32,
             fg_color="transparent", border_width=1,
             text_color=ACCENT, border_color=ACCENT,
             hover_color=ACCENT_FAINT,
-        ).grid(row=1, column=0, sticky="ew", padx=8, pady=(4, 4))
+        ).grid(row=0, column=2, sticky="ew")
 
         # Detector entry frame — shown after analysis for new weeks only, hidden initially
         self._det_frame = ctk.CTkScrollableFrame(
@@ -377,9 +388,16 @@ class App(ctk.CTk):
 
         self._set_preview("Reading files...")
 
+        try:
+            year_filter = int(self._year_var.get().strip())
+        except ValueError:
+            year_filter = None
+
         def _work():
             try:
-                raw      = core.load_raw(source_path)
+                raw   = core.load_raw(source_path)
+                if year_filter:
+                    raw = raw[raw["InsertDate"].dt.year == year_filter].reset_index(drop=True)
                 costs    = core.load_costs(costs_path)
                 existing = core.load_results(results_path)
                 info     = core.analyse(raw, costs, existing)
@@ -571,12 +589,14 @@ class App(ctk.CTk):
         if "source"  in self._cfg: self._source_var.set(self._cfg["source"])
         if "costs"   in self._cfg: self._costs_var.set(self._cfg["costs"])
         if "results" in self._cfg: self._results_var.set(self._cfg["results"])
+        if "year"    in self._cfg: self._year_var.set(self._cfg["year"])
 
     def _save_current_paths(self):
         self._cfg.update({
             "source":  self._source_var.get(),
             "costs":   self._costs_var.get(),
             "results": self._results_var.get(),
+            "year":    self._year_var.get(),
         })
         _save_config(self._cfg)
 
