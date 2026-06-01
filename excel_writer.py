@@ -3,8 +3,6 @@ excel_writer.py — writes results.xlsx with all sheets and charts
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 from openpyxl import Workbook, load_workbook
@@ -476,18 +474,3 @@ def _write_charts(wb: Workbook, results: dict[str, pd.DataFrame]):
         chart_row += STEP
 
 
-def update_raw_sheet(raw_path: str, raw_df: pd.DataFrame):
-    """Replace the first (Raw) sheet in raw_path, preserving all other sheets."""
-    p = Path(raw_path)
-    other_sheets: list[tuple[str, pd.DataFrame]] = []
-    first_name = "Raw data"
-    if p.exists():
-        xl = pd.ExcelFile(raw_path)
-        if xl.sheet_names:
-            first_name = xl.sheet_names[0]
-            for name in xl.sheet_names[1:]:
-                other_sheets.append((name, xl.parse(name)))
-    with pd.ExcelWriter(raw_path, engine="openpyxl") as writer:
-        raw_df.to_excel(writer, sheet_name=first_name, index=False)
-        for name, df in other_sheets:
-            df.to_excel(writer, sheet_name=name, index=False)
