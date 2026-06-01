@@ -228,9 +228,12 @@ class App(ctk.CTk):
             hover_color=ACCENT_FAINT,
         ).grid(row=1, column=0, sticky="ew", padx=8, pady=(4, 4))
 
-        # Detector entry frame — shown after analysis, hidden initially
-        self._det_frame = ctk.CTkFrame(left, fg_color=ACCENT_FAINT,
-                                       border_width=1, border_color=BORDER)
+        # Detector entry frame — shown after analysis for new weeks only, hidden initially
+        self._det_frame = ctk.CTkScrollableFrame(
+            left, fg_color=ACCENT_FAINT,
+            border_width=1, border_color=BORDER,
+            height=120,
+        )
         self._det_frame.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 4))
         self._det_frame.grid_columnconfigure(1, weight=1)
         self._det_frame.grid_remove()
@@ -408,7 +411,7 @@ class App(ctk.CTk):
         elif results_exist:
             lines.append("  No new weeks — use the button below to refresh detector counts")
             btn_text, btn_on = "Refresh detector counts", True
-            det_pairs = info["missing_det_pairs"]
+            det_pairs = []
         else:
             lines.append("  No new weeks to add")
             btn_text, btn_on = "Add new weeks to results.xlsx", False
