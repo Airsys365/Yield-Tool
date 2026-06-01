@@ -240,7 +240,8 @@ class App(ctk.CTk):
             left, text="Add new weeks to results.xlsx",
             command=self._run_update, height=40,
             font=ctk.CTkFont(size=13, weight="bold"),
-            fg_color=ACCENT, hover_color=ACCENT_HOVER,
+            fg_color=BORDER, hover_color=BORDER,
+            text_color=MUTED,
             state="disabled",
         )
         self._run_btn.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 8))
@@ -414,7 +415,7 @@ class App(ctk.CTk):
             det_pairs = []
 
         self._build_detector_entries(det_pairs)
-        self._run_btn.configure(state="normal" if btn_on else "disabled", text=btn_text)
+        self._set_run_btn(btn_on, btn_text)
         self._set_preview("\n".join(lines))
         self._save_current_paths()
 
@@ -454,7 +455,7 @@ class App(ctk.CTk):
         self._analysis = None
         self._det_entries = {}
         self._det_frame.grid_remove()
-        self._run_btn.configure(state="disabled", text="Add new weeks to results.xlsx")
+        self._set_run_btn(False, "Add new weeks to results.xlsx")
         self._set_preview("")
 
     # ── Add weeks + apply detectors ───────────────────────────────────────────────
@@ -482,7 +483,7 @@ class App(ctk.CTk):
             except (ValueError, TypeError):
                 pass
 
-        self._run_btn.configure(state="disabled", text="Working...")
+        self._set_run_btn(False, "Working...")
         self._log_clear()
 
         def _work():
@@ -519,20 +520,27 @@ class App(ctk.CTk):
                         "warn")
 
                 self._log_add("Done.", "ok")
-                self.after(0, lambda: self._run_btn.configure(
-                    state="disabled", text="Add new weeks to results.xlsx"))
                 self.after(0, self._clear_analysis)
 
             except Exception as e:
                 tb = traceback.format_exc()
                 self._log_add(f"Error: {e}", "err")
                 self._log_add(tb, "err")
-                self.after(0, lambda: self._run_btn.configure(
-                    state="normal", text="Add new weeks to results.xlsx"))
+                self.after(0, lambda: self._set_run_btn(True, "Add new weeks to results.xlsx"))
 
         threading.Thread(target=_work, daemon=True).start()
 
     # ── Helpers ─────────────────────────────────────────────────────────────────────────
+
+    def _set_run_btn(self, enabled: bool, text: str):
+        if enabled:
+            self._run_btn.configure(
+                state="normal", text=text,
+                fg_color=ACCENT, hover_color=ACCENT_HOVER, text_color="white")
+        else:
+            self._run_btn.configure(
+                state="disabled", text=text,
+                fg_color=BORDER, hover_color=BORDER, text_color=MUTED)
 
     def _set_preview(self, text: str):
         self._preview.configure(state="normal")
