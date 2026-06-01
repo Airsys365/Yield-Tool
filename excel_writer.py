@@ -472,3 +472,5 @@ def _write_charts(wb: Workbook, results: dict[str, pd.DataFrame]):
             ser.smooth = False
         ws.add_chart(chart, f"H{chart_row}")
         chart_row += STEP
+
+

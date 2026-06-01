@@ -184,14 +184,30 @@ def analyse(raw: pd.DataFrame, costs: pd.DataFrame,
 
     prod_week_pairs = existing_prod_weeks | new_prod_weeks
 
+    new_det_pairs = sorted(
+        (p, w) for (p, w) in new_prod_weeks if w in weeks_to_add
+    )
+
+    prod_df = existing.get("product", pd.DataFrame())
+    missing_det_pairs: list[tuple[str, str]] = []
+    if not prod_df.empty and "completed_detectors" in prod_df.columns:
+        missing_mask = prod_df["completed_detectors"].isna()
+        missing_df   = prod_df[missing_mask][["Product", "Week"]].copy()
+        missing_df   = missing_df.sort_values("Week", ascending=False).head(8)
+        missing_det_pairs = [
+            (str(r["Product"]), str(r["Week"])) for _, r in missing_df.iterrows()
+        ]
+
     return {
-        "known_items":      sorted(known_items),
-        "product_map":      product_map,
-        "weeks_in_raw":     weeks_in_raw,
-        "weeks_in_results": weeks_in_results,
-        "weeks_to_add":     weeks_to_add,
-        "ignored_items":    ignored_items,
-        "prod_week_pairs":  prod_week_pairs,
+        "known_items":       sorted(known_items),
+        "product_map":       product_map,
+        "weeks_in_raw":      weeks_in_raw,
+        "weeks_in_results":  weeks_in_results,
+        "weeks_to_add":      weeks_to_add,
+        "ignored_items":     ignored_items,
+        "prod_week_pairs":   prod_week_pairs,
+        "new_det_pairs":     new_det_pairs,
+        "missing_det_pairs": missing_det_pairs,
     }
 
 
@@ -377,6 +393,19 @@ def load_detectors(path: str,
             if count > 0:
                 out.append((product, week, count))
     return out
+
+
+def import_raw_from_source(source_path: str) -> tuple[pd.DataFrame, str]:
+    """Read source file and return rows for the previous ISO week."""
+    from datetime import date, timedelta
+    today = date.today()
+    prev  = today - timedelta(days=7)
+    yr, wk, _ = prev.isocalendar()
+    target = f"{yr}-W{wk:02d}"
+    df = load_raw(source_path)
+    df["_week"] = df["InsertDate"].dt.strftime("%G-W%V")
+    out = df[df["_week"] == target].drop(columns=["_week"]).reset_index(drop=True)
+    return out, target
 
 
 def apply_detectors(results: dict[str, pd.DataFrame],

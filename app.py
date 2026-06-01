@@ -35,85 +35,70 @@ ERR_COLOR    = "#C0392B"
 HELP_TEXT = """Yield & Scrap Cost Tool
 
 WHAT IT DOES
-Reads a weekly production export and computes yield and scrap cost per
-week, then appends the results to results.xlsx. Existing weeks are
-never recalculated — historical scrap costs stay locked at the prices
-that were active when the week was first processed.
+Reads weekly production data directly from the DB source file, computes
+yield and scrap cost per week, then appends results to results.xlsx.
+Existing weeks are never recalculated — historical scrap costs are locked
+at the prices that were active when each week was first processed.
 
-THE RAW FILE HOLDS EVERYTHING (single source of truth)
-The raw .xlsx file contains three sheets:
-
-1. Raw data (first sheet) — the database export.
+FILES
+1. DB source — the weekly production export (.xlsx from the database).
    Required columns: Item, OperationNo, TaskNo, TaskDescription,
-   InsertDate, Good, Bad. Column names are matched by keyword, case
-   does not matter.
+   InsertDate, Good, Bad. Column names are matched by keyword; case
+   does not matter. Can contain many weeks — only new ones are processed.
 
-2. Costs — the cost table.
-   Required columns: Product, Item, OperationNo, TaskNo,
-   AccumulatedCost. Optional: TaskDescription. European decimal
-   commas (3,42) are accepted.
+2. Costs — the cost table (.xlsx). Required columns: Product, Item,
+   OperationNo, TaskNo, AccumulatedCost. Optional: TaskDescription,
+   Name. European decimal commas (3,42) are accepted. Loaded fresh on
+   every run, so cost updates on OneDrive/SharePoint are picked up
+   automatically.
 
-3. Detectors — completed detector counts. Matrix layout: the first
-   column is the Week, every other column header names a product, and
-   the cells hold the counts:
+3. Results — results.xlsx. Created on the first run.
 
-       Week      | Gamma SH2A280 | Shallow SH2A295
-       2026-W18  |               | 1230
-       2026-W20  | 1015          |
-
-   Week is the calendar week — W18 or 2026-W18. A column header may
-   carry an extra item code (e.g. "Shallow SH2A295"); the product name
-   inside it is what gets matched. This sheet is optional; without it
-   the "Scrap per Detector" column simply stays empty.
-
-Items present in raw but missing from Costs are dropped (listed under
-"Ignored" in the preview).
-
-Keeping detectors in the raw file means you never re-type a year of
-counts: if the results path changes or the file is regenerated from
-scratch, the detector numbers are read straight back from the raw
-file.
+All three paths are remembered between sessions.
 
 WORKFLOW
-1. Pick the raw file and the results.xlsx path. If results.xlsx does
-   not exist yet it will be created on the first run.
+1. Set DB source, Costs, and Results paths (once).
 
-2. Click "Check files". The preview shows which products and items
-   were found, which weeks already live in results.xlsx, and which
-   weeks are about to be added.
+2. Click "Check files". Preview shows products, items, and which weeks
+   are new. A "Completed Detectors" form appears for each new
+   product/week combination.
 
-3. Click "Add new weeks". New weeks are calculated and detector
-   counts from the raw file's Detectors sheet are applied. If there
-   are no new weeks the button becomes "Refresh detector counts" and
-   re-applies the detector numbers to the existing weeks.
+3. Enter completed detector counts (units shipped that week). Leave
+   blank for any week you don't have the count yet — you can fill them
+   in later with "Refresh detector counts".
+
+4. Click "Add new weeks". New weeks are calculated, detector counts
+   applied, and results.xlsx is saved.
+
+COMPLETED DETECTORS
+Detectors are units shipped per week — used to compute scrap per unit.
+Enter the count for each product and week shown after "Check files".
+Missing counts leave "Scrap / Detector" empty in the output. Re-run
+the tool later with "Refresh detector counts" to fill them in.
 
 OUTPUT SHEETS (results.xlsx)
-- ProductSummary    overall yield, scrap qty, scrap cost, scrap per
-                   detector per product/week, plus a cumulative
-                   summary across all weeks.
-- ComponentSummary  same metrics broken down by component (item).
-- WeeklyDetail      row per operation per week. Yellow highlight:
-                   yield below 95% or missing price.
-- Charts            weekly trend charts: scrap cost, scrap per
-                   detector, and one yield chart per product.
-- Detectors         the detector counts that were applied.
+  ProductSummary    yield, scrap qty, scrap cost, scrap/detector per
+                    product/week, plus a cumulative summary row.
+  ComponentSummary  same metrics broken down by component (item).
+  WeeklyDetail      one row per operation per week. Yellow highlight:
+                    yield below 95% or missing price.
+  Charts            weekly trend charts: scrap cost, scrap/detector,
+                    and one yield chart per product.
+  Detectors         detector counts that were applied.
 
 WEEK FORMAT
-ISO week, YYYY-Www (for example 2026-W18). On chart X-axes only "W18"
-is shown for readability.
+ISO week, YYYY-Www (e.g. 2026-W18). Charts show only "W18".
 
 LOCKED PRICES
-Once a week is written to results.xlsx its prices and scrap costs are
-frozen. If you later edit AccumulatedCost in the Costs sheet those
-changes apply only to weeks added afterwards. To recalculate a
-historical week, delete its rows from WeeklyDetail, ComponentSummary
-and ProductSummary, then run the tool again.
+Once a week is in results.xlsx its prices are frozen. Editing the Costs
+file later only affects newly added weeks. To recalculate a historical
+week, delete its rows from WeeklyDetail, ComponentSummary and
+ProductSummary, then re-run the tool.
 
 TROUBLESHOOTING
-The Log panel on the right shows the full traceback when something
-fails. Common causes: missing Costs sheet, mismatched column names,
-or a product renamed in Costs without updating historical rows in
-results.xlsx.
+The Log panel shows full tracebacks. Common causes: missing columns in
+Costs, mismatched column names, or a product renamed in Costs without
+updating historical rows in results.xlsx.
 """
 
 
@@ -146,6 +131,7 @@ class App(ctk.CTk):
 
         self._cfg      = _load_config()
         self._analysis: dict | None = None
+        self._det_entries: dict[tuple[str, str], ctk.StringVar] = {}
 
         self._build_ui()
         self._restore_paths()
@@ -174,7 +160,6 @@ class App(ctk.CTk):
     def _build_ui(self):
         self.grid_rowconfigure(0, weight=0)
         self.grid_rowconfigure(1, weight=1)
-        # Two panes: left (controls + preview) | sep | right (log)
         self.grid_columnconfigure(0, weight=2, minsize=int(420 * self._scale))
         self.grid_columnconfigure(1, weight=0, minsize=1)
         self.grid_columnconfigure(2, weight=3)
@@ -224,15 +209,18 @@ class App(ctk.CTk):
                      font=ctk.CTkFont(weight="bold")).grid(
             row=0, column=0, sticky="w", padx=4, pady=(4, 4))
 
-        self._raw_var     = ctk.StringVar()
+        self._source_var  = ctk.StringVar()
+        self._costs_var   = ctk.StringVar()
         self._results_var = ctk.StringVar(value=str(RESULTS_DEFAULT))
 
-        self._file_row(ff, "Raw data:", self._raw_var, self._pick_raw,
-                       "DB export  (Costs + Detectors sheets)", row=1)
-        self._file_row(ff, "Results:",  self._results_var, self._pick_results,
-                       "results.xlsx", row=2)
+        self._file_row(ff, "DB source:", self._source_var, self._pick_source,
+                       "production export xlsx", row=1)
+        self._file_row(ff, "Costs:",     self._costs_var,  self._pick_costs,
+                       "costs xlsx  (Product / Item / AccumulatedCost)", row=2)
+        self._file_row(ff, "Results:",   self._results_var, self._pick_results,
+                       "results.xlsx", row=3)
 
-        # Buttons
+        # Check button
         ctk.CTkButton(
             left, text="Check files", command=self._run_analysis, height=32,
             fg_color="transparent", border_width=1,
@@ -240,6 +228,14 @@ class App(ctk.CTk):
             hover_color=ACCENT_FAINT,
         ).grid(row=1, column=0, sticky="ew", padx=8, pady=(4, 4))
 
+        # Detector entry frame — shown after analysis, hidden initially
+        self._det_frame = ctk.CTkFrame(left, fg_color=ACCENT_FAINT,
+                                       border_width=1, border_color=BORDER)
+        self._det_frame.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 4))
+        self._det_frame.grid_columnconfigure(1, weight=1)
+        self._det_frame.grid_remove()
+
+        # Run button
         self._run_btn = ctk.CTkButton(
             left, text="Add new weeks to results.xlsx",
             command=self._run_update, height=40,
@@ -247,7 +243,7 @@ class App(ctk.CTk):
             fg_color=ACCENT, hover_color=ACCENT_HOVER,
             state="disabled",
         )
-        self._run_btn.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
+        self._run_btn.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 8))
 
         # Preview (expands)
         pf = ctk.CTkFrame(left, fg_color="transparent")
@@ -291,10 +287,10 @@ class App(ctk.CTk):
         t.tag_config("warn", foreground="#9A6700")
 
     def _file_row(self, parent, label, var, pick_cmd, hint, row):
-        ctk.CTkLabel(parent, text=label, width=70, anchor="w").grid(
+        ctk.CTkLabel(parent, text=label, width=72, anchor="w").grid(
             row=row, column=0, sticky="w", padx=(4, 4), pady=3)
         wrap = ctk.CTkFrame(parent, fg_color="transparent")
-        wrap.grid(row=row, column=0, sticky="ew", padx=(78, 4), pady=3)
+        wrap.grid(row=row, column=0, sticky="ew", padx=(80, 4), pady=3)
         wrap.grid_columnconfigure(0, weight=1)
         e = ctk.CTkEntry(wrap, textvariable=var, placeholder_text=hint)
         e.grid(row=0, column=0, sticky="ew", padx=(0, 6))
@@ -335,12 +331,20 @@ class App(ctk.CTk):
 
     # ── File dialogs ─────────────────────────────────────────────────────────────
 
-    def _pick_raw(self):
+    def _pick_source(self):
         p = filedialog.askopenfilename(
-            title="Raw data file",
-            filetypes=[("Excel / CSV", "*.xlsx *.xls *.csv"), ("All files", "*.*")])
+            title="DB source file",
+            filetypes=[("Excel", "*.xlsx *.xls"), ("All files", "*.*")])
         if p:
-            self._raw_var.set(p)
+            self._source_var.set(p)
+            self._clear_analysis()
+
+    def _pick_costs(self):
+        p = filedialog.askopenfilename(
+            title="Costs file",
+            filetypes=[("Excel", "*.xlsx *.xls"), ("All files", "*.*")])
+        if p:
+            self._costs_var.set(p)
             self._clear_analysis()
 
     def _pick_results(self):
@@ -356,23 +360,25 @@ class App(ctk.CTk):
 
     def _run_analysis(self):
         self._clear_analysis()
-        raw_path     = self._raw_var.get().strip()
+        source_path  = self._source_var.get().strip()
+        costs_path   = self._costs_var.get().strip()
         results_path = self._results_var.get().strip()
 
-        if not raw_path:
-            messagebox.showwarning("No file", "Select a raw data file")
+        if not source_path:
+            messagebox.showwarning("No file", "Select a DB source file")
+            return
+        if not costs_path:
+            messagebox.showwarning("No file", "Select a Costs file")
             return
 
         self._set_preview("Reading files...")
 
         def _work():
             try:
-                raw      = core.load_raw(raw_path)
-                costs    = core.load_costs(raw_path)
+                raw      = core.load_raw(source_path)
+                costs    = core.load_costs(costs_path)
                 existing = core.load_results(results_path)
                 info     = core.analyse(raw, costs, existing)
-                products = sorted(set(info["product_map"].values()))
-                info["detector_rows"] = core.load_detectors(raw_path, products)
                 self.after(0, lambda: self._show_analysis(info))
             except Exception as e:
                 msg = f"Error:\n{e}"
@@ -388,32 +394,66 @@ class App(ctk.CTk):
         if info["ignored_items"]:
             lines.append(f"  Ignored: {', '.join(info['ignored_items'][:5])}"
                          f"{'...' if len(info['ignored_items']) > 5 else ''}")
-        lines.append(f"  In raw data:  {', '.join(info['weeks_in_raw']) or '—'}")
-        lines.append(f"  In results:   {', '.join(info['weeks_in_results']) or '—'}")
+        lines.append(f"  In source:   {', '.join(info['weeks_in_raw']) or '—'}")
+        lines.append(f"  In results:  {', '.join(info['weeks_in_results']) or '—'}")
 
-        det_rows = info.get("detector_rows", [])
-        lines.append(f"  Detectors sheet: {len(det_rows)} row(s)"
-                     if det_rows else "  Detectors sheet: none")
-
-        results_path = self._results_var.get().strip()
+        results_path  = self._results_var.get().strip()
         results_exist = Path(results_path).exists() if results_path else False
 
         if info["weeks_to_add"]:
-            lines.append(f"  To add:       {', '.join(info['weeks_to_add'])}")
+            lines.append(f"  To add:      {', '.join(info['weeks_to_add'])}")
             btn_text, btn_on = "Add new weeks to results.xlsx", True
+            det_pairs = info["new_det_pairs"]
         elif results_exist:
             lines.append("  No new weeks — use the button below to refresh detector counts")
             btn_text, btn_on = "Refresh detector counts", True
+            det_pairs = info["missing_det_pairs"]
         else:
             lines.append("  No new weeks to add")
             btn_text, btn_on = "Add new weeks to results.xlsx", False
+            det_pairs = []
 
+        self._build_detector_entries(det_pairs)
         self._run_btn.configure(state="normal" if btn_on else "disabled", text=btn_text)
         self._set_preview("\n".join(lines))
         self._save_current_paths()
 
+    def _build_detector_entries(self, pairs: list[tuple[str, str]]):
+        for child in list(self._det_frame.winfo_children()):
+            child.destroy()
+        self._det_entries = {}
+
+        if not pairs:
+            self._det_frame.grid_remove()
+            return
+
+        ctk.CTkLabel(
+            self._det_frame,
+            text="Completed Detectors",
+            font=ctk.CTkFont(weight="bold"),
+        ).grid(row=0, column=0, columnspan=3, sticky="w", padx=8, pady=(6, 2))
+
+        for i, (product, week) in enumerate(sorted(pairs)):
+            ctk.CTkLabel(
+                self._det_frame,
+                text=f"  {product}  {week}:",
+                anchor="w",
+            ).grid(row=i + 1, column=0, sticky="w", padx=(8, 4), pady=2)
+            var = ctk.StringVar()
+            self._det_entries[(product, week)] = var
+            ctk.CTkEntry(
+                self._det_frame, textvariable=var, width=80, placeholder_text="0",
+            ).grid(row=i + 1, column=1, sticky="w", pady=2)
+            ctk.CTkLabel(
+                self._det_frame, text="units", text_color=MUTED,
+            ).grid(row=i + 1, column=2, sticky="w", padx=(4, 8), pady=2)
+
+        self._det_frame.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 4))
+
     def _clear_analysis(self, *_):
         self._analysis = None
+        self._det_entries = {}
+        self._det_frame.grid_remove()
         self._run_btn.configure(state="disabled", text="Add new weeks to results.xlsx")
         self._set_preview("")
 
@@ -423,14 +463,24 @@ class App(ctk.CTk):
         if not self._analysis:
             return
 
-        weeks_to_add = self._analysis.get("weeks_to_add", [])
-        raw_path     = self._raw_var.get().strip()
-        results_path = self._results_var.get().strip()
+        weeks_to_add  = self._analysis.get("weeks_to_add", [])
+        source_path   = self._source_var.get().strip()
+        costs_path    = self._costs_var.get().strip()
+        results_path  = self._results_var.get().strip()
 
         if not weeks_to_add and not Path(results_path).exists():
-            messagebox.showwarning("No file",
-                                   "results.xlsx not found.\nAdd weeks first.")
+            messagebox.showwarning("No file", "results.xlsx not found.\nAdd weeks first.")
             return
+
+        # Collect detector entries from GUI
+        det_rows: list[tuple[str, str, int]] = []
+        for (product, week), var in self._det_entries.items():
+            try:
+                count = int(var.get().strip())
+                if count > 0:
+                    det_rows.append((product, week, count))
+            except (ValueError, TypeError):
+                pass
 
         self._run_btn.configure(state="disabled", text="Working...")
         self._log_clear()
@@ -441,8 +491,8 @@ class App(ctk.CTk):
                 existing = core.load_results(results_path)
 
                 if weeks_to_add:
-                    raw   = core.load_raw(raw_path)
-                    costs = core.load_costs(raw_path)
+                    raw   = core.load_raw(source_path)
+                    costs = core.load_costs(costs_path)
                     self._log_add(f"Processing weeks: {', '.join(weeks_to_add)}", "info")
                     new    = core.process_new_weeks(raw, costs, weeks_to_add)
                     merged = core.merge_results(existing, new)
@@ -452,14 +502,12 @@ class App(ctk.CTk):
                     merged = existing
                     self._log_add("No new weeks — refreshing detector counts only", "info")
 
-                products = sorted(merged["product"]["Product"].dropna().astype(str).unique())
-                det_rows = core.load_detectors(raw_path, products)
                 merged, det_applied = core.apply_detectors(merged, det_rows)
                 if det_rows:
                     self._log_add(
                         f"Detectors: {det_applied} of {len(det_rows)} row(s) applied", "info")
                 else:
-                    self._log_add("No Detectors sheet in raw file", "warn")
+                    self._log_add("No detector counts entered", "warn")
 
                 self._log_add("Saving results.xlsx...", "info")
                 excel_writer.save_results(results_path, merged)
@@ -467,8 +515,8 @@ class App(ctk.CTk):
                 missing_det = merged["product"]["completed_detectors"].isna().sum()
                 if missing_det:
                     self._log_add(
-                        f"{missing_det} product/week rows still without detectors "
-                        f"— add them to the Detectors sheet", "warn")
+                        f"{missing_det} product/week rows still without detector counts",
+                        "warn")
 
                 self._log_add("Done.", "ok")
                 self.after(0, lambda: self._run_btn.configure(
@@ -509,12 +557,16 @@ class App(ctk.CTk):
         self.after(0, _do)
 
     def _restore_paths(self):
-        if "raw"     in self._cfg: self._raw_var.set(self._cfg["raw"])
+        if "source"  in self._cfg: self._source_var.set(self._cfg["source"])
+        if "costs"   in self._cfg: self._costs_var.set(self._cfg["costs"])
         if "results" in self._cfg: self._results_var.set(self._cfg["results"])
 
     def _save_current_paths(self):
-        self._cfg.update({"raw": self._raw_var.get(),
-                          "results": self._results_var.get()})
+        self._cfg.update({
+            "source":  self._source_var.get(),
+            "costs":   self._costs_var.get(),
+            "results": self._results_var.get(),
+        })
         _save_config(self._cfg)
 
 
