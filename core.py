@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 import warnings
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -188,26 +189,43 @@ def analyse(raw: pd.DataFrame, costs: pd.DataFrame,
         (p, w) for (p, w) in new_prod_weeks if w in weeks_to_add
     )
 
-    prod_df = existing.get("product", pd.DataFrame())
-    missing_det_pairs: list[tuple[str, str]] = []
-    if not prod_df.empty and "completed_detectors" in prod_df.columns:
-        missing_mask = prod_df["completed_detectors"].isna()
-        missing_df   = prod_df[missing_mask][["Product", "Week"]].copy()
-        missing_df   = missing_df.sort_values("Week", ascending=False).head(8)
-        missing_det_pairs = [
-            (str(r["Product"]), str(r["Week"])) for _, r in missing_df.iterrows()
-        ]
+    # Gap weeks: weeks between last processed week and first new week (or today
+    # in refresh mode) that have no production data and aren't being added now.
+    gap_det_pairs: list[tuple[str, str]] = []
+    if weeks_in_results:
+        last_result = max(weeks_in_results)
+        m = re.match(r"(\d{4})-W(\d{2})", last_result)
+        if m:
+            last_yr, last_wn = int(m.group(1)), int(m.group(2))
+            today = date.today()
+            curr_yr, curr_wn, _ = today.isocalendar()
+            existing_weeks_flat = set(weeks_in_results)
+            new_weeks_flat      = set(weeks_to_add)
+            products_sorted     = sorted(set(product_map.values()))
+            # Fence: up to (not including) the first new week, or current week
+            if weeks_to_add:
+                mf = re.match(r"\d{4}-W(\d{2})", min(weeks_to_add))
+                fence = int(mf.group(1)) if mf else curr_wn
+            else:
+                fence = curr_wn
+            if last_yr == curr_yr:
+                for wn in range(last_wn + 1, fence):
+                    wk = f"{curr_yr}-W{wn:02d}"
+                    if wk not in existing_weeks_flat and wk not in new_weeks_flat:
+                        for prod in products_sorted:
+                            gap_det_pairs.append((prod, wk))
+                gap_det_pairs = gap_det_pairs[:8]  # safety cap
 
     return {
-        "known_items":       sorted(known_items),
-        "product_map":       product_map,
-        "weeks_in_raw":      weeks_in_raw,
-        "weeks_in_results":  weeks_in_results,
-        "weeks_to_add":      weeks_to_add,
-        "ignored_items":     ignored_items,
-        "prod_week_pairs":   prod_week_pairs,
-        "new_det_pairs":     new_det_pairs,
-        "missing_det_pairs": missing_det_pairs,
+        "known_items":      sorted(known_items),
+        "product_map":      product_map,
+        "weeks_in_raw":     weeks_in_raw,
+        "weeks_in_results": weeks_in_results,
+        "weeks_to_add":     weeks_to_add,
+        "ignored_items":    ignored_items,
+        "prod_week_pairs":  prod_week_pairs,
+        "new_det_pairs":    new_det_pairs,
+        "gap_det_pairs":    gap_det_pairs,
     }
 
 
@@ -428,7 +446,19 @@ def apply_detectors(results: dict[str, pd.DataFrame],
             results = set_completed_detectors(results, product, wk, count)
             applied += 1
         except ValueError:
-            continue
+            # No production rows for this product/week — create a detector-only stub
+            stub = pd.DataFrame([{
+                "Product":             product,
+                "Week":                wk,
+                "total_scrap_cost":    np.nan,
+                "composite_yield":     np.nan,
+                "total_bad_qty":       np.nan,
+                "completed_detectors": float(count),
+                "scrap_per_detector":  np.nan,
+            }])
+            results["product"] = pd.concat(
+                [results["product"], stub], ignore_index=True)
+            applied += 1
     return results, applied
 
 

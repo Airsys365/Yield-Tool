@@ -422,14 +422,19 @@ class App(ctk.CTk):
         results_path  = self._results_var.get().strip()
         results_exist = Path(results_path).exists() if results_path else False
 
+        gap_pairs = info.get("gap_det_pairs", [])
+
         if info["weeks_to_add"]:
             lines.append(f"  To add:      {', '.join(info['weeks_to_add'])}")
+            if gap_pairs:
+                gap_weeks = sorted({w for _, w in gap_pairs})
+                lines.append(f"  No-production gaps: {', '.join(gap_weeks)}")
             btn_text, btn_on = "Add new weeks to results.xlsx", True
-            det_pairs = info["new_det_pairs"]
+            det_pairs = sorted(set(info["new_det_pairs"]) | set(gap_pairs))
         elif results_exist:
             lines.append("  No new weeks — use the button below to refresh detector counts")
             btn_text, btn_on = "Refresh detector counts", True
-            det_pairs = []
+            det_pairs = gap_pairs
         else:
             lines.append("  No new weeks to add")
             btn_text, btn_on = "Add new weeks to results.xlsx", False
